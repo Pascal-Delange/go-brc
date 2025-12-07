@@ -19,7 +19,7 @@ import (
 func main() {
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	fileName := flag.String("filename", "./data/measurements_1M.txt", "file to read")
-	multiplier := flag.Int("threads-multiplier", 1, "multiplier between cores & goroutines")
+	routines := flag.Int("routines", runtime.NumCPU(), "nb of goroutines")
 	flag.Parse()
 	fmt.Println("reading file " + *fileName)
 	if *cpuprofile != "" {
@@ -36,7 +36,7 @@ func main() {
 		log.Fatal(err)
 	}
 	length := fi.Size()
-	chunks := int64(runtime.NumCPU() * *multiplier)
+	chunks := int64(*routines)
 	fmt.Printf("Running with %d goroutines (and as many chunks)\n", chunks)
 	chunksize := length / chunks
 	separators := []int64{}
