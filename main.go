@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 )
@@ -22,9 +23,18 @@ type result struct {
 }
 
 func computeStats() {
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	fileName := flag.String("filename", "./data/measurements_1M.txt", "file to read")
 	flag.Parse()
 	fmt.Println("reading file " + *fileName)
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
 	file, err := os.Open(*fileName)
 	if err != nil {
