@@ -88,18 +88,21 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 		}
 	}
 
+	var byt []byte
+	var text string
+	var textSl []string
+	var val int64
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			log.Fatalln(err)
 		}
 
-		byt := scanner.Bytes()
+		byt = scanner.Bytes()
 
-		text := string(byt)
-		textSl := strings.Split(text, ";")
+		text = string(byt)
+		textSl = strings.Split(text, ";")
 		textSl[1] = strings.Replace(textSl[1], ".", "", 1)
-		val, _ := strconv.ParseInt(textSl[1], 0, 64)
-		valI := int(val)
+		val, _ = strconv.ParseInt(textSl[1], 0, 64)
 
 		if _, ok := resultsMap[textSl[0]]; ok {
 			// if textSl[0] == "Aachen" && valI > 990 {
@@ -110,9 +113,9 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 			// }
 			resultsMap[textSl[0]] = result{
 				count: resultsMap[textSl[0]].count + 1,
-				sum:   resultsMap[textSl[0]].sum + valI,
-				min:   min(resultsMap[textSl[0]].min, valI),
-				max:   max(resultsMap[textSl[0]].max, valI),
+				sum:   resultsMap[textSl[0]].sum + val,
+				min:   min(resultsMap[textSl[0]].min, val),
+				max:   max(resultsMap[textSl[0]].max, val),
 			}
 			// if os.Getenv("log_level") == "debug" {
 			// 	fmt.Printf(" - new: %+v\n", resultsMap[textSl[0]])
@@ -120,9 +123,9 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 		} else {
 			resultsMap[textSl[0]] = result{
 				count: 1,
-				sum:   valI,
-				min:   valI,
-				max:   valI,
+				sum:   val,
+				min:   val,
+				max:   val,
 			}
 		}
 

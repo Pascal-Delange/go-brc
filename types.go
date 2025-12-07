@@ -1,8 +1,8 @@
 package main
 
 type result struct {
-	count int
-	sum   int
-	max   int
-	min   int
+	count int64
+	sum   int64
+	max   int64
+	min   int64
 }
