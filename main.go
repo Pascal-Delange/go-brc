@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -12,14 +13,14 @@ import (
 	"runtime/pprof"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
+	"unsafe"
 )
 
 func main() {
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	fileName := flag.String("filename", "./data/measurements_1M.txt", "file to read")
-	routines := flag.Int("routines", runtime.NumCPU(), "nb of goroutines")
+	routines := flag.Int("routines", runtime.NumCPU()+1, "nb of goroutines")
 	flag.Parse()
 	fmt.Println("reading file " + *fileName)
 	if *cpuprofile != "" {
@@ -70,6 +71,10 @@ func main() {
 	fmt.Print("}\n\n")
 }
 
+func unsafeBytesToString(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
+}
+
 func computeStatsMap(fileName string, idx int, resultsMap map[string]result, start, end int64, first bool) {
 	fmt.Printf("Chunk %d: Reading rows between bytes %d and %d\n", idx, start, end)
 	file, err := os.Open(fileName)
@@ -78,9 +83,10 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 	}
 	defer file.Close()
 	file.Seek(start, io.SeekStart)
+	reader := bufio.NewReader(file)
 	ptr := start
 
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
 	if !first {
 		more := scanner.Scan()
 		if !more {
@@ -89,9 +95,9 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 	}
 
 	var byt []byte
-	var text string
-	var textSl []string
 	var val int64
+	var sepIdx int
+	i := 0
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			log.Fatalln(err)
@@ -99,34 +105,46 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 
 		byt = scanner.Bytes()
 
-		text = string(byt)
-		textSl = strings.Split(text, ";")
-		textSl[1] = strings.Replace(textSl[1], ".", "", 1)
-		val, _ = strconv.ParseInt(textSl[1], 0, 64)
+		sepIdx = bytes.IndexByte(byt, ';')
 
-		if _, ok := resultsMap[textSl[0]]; ok {
+		name := unsafeBytesToString(byt[:sepIdx])
+		pointSeptIdx := bytes.IndexByte(byt[sepIdx+1:], '.')
+		valStr := unsafeBytesToString(append(byt[sepIdx+1:sepIdx+1+pointSeptIdx], byt[sepIdx+1+pointSeptIdx+1:]...))
+		// fmt.Println(valStr)
+
+		// valStr = strings.Replace(valStr, ".", "", 1)
+		val, _ = strconv.ParseInt(valStr, 0, 64)
+		// fmt.Println("chunk: ", idx, name, val)
+
+		if _, ok := resultsMap[name]; ok {
 			// if textSl[0] == "Aachen" && valI > 990 {
 			// 	fmt.Println(text)
 			// }
 			// if os.Getenv("log_level") == "debug" {
 			// 	fmt.Printf("%s: \n - Before: %+v\n - received %v\n", textSl[0], resultsMap[textSl[0]], valI)
 			// }
-			resultsMap[textSl[0]] = result{
-				count: resultsMap[textSl[0]].count + 1,
-				sum:   resultsMap[textSl[0]].sum + val,
-				min:   min(resultsMap[textSl[0]].min, val),
-				max:   max(resultsMap[textSl[0]].max, val),
+			resultsMap[name] = result{
+				count: resultsMap[name].count + 1,
+				sum:   resultsMap[name].sum + val,
+				min:   min(resultsMap[name].min, val),
+				max:   max(resultsMap[name].max, val),
 			}
 			// if os.Getenv("log_level") == "debug" {
 			// 	fmt.Printf(" - new: %+v\n", resultsMap[textSl[0]])
 			// }
 		} else {
-			resultsMap[textSl[0]] = result{
+			resultsMap[name] = result{
 				count: 1,
 				sum:   val,
 				min:   val,
 				max:   val,
 			}
+		}
+		// fmt.Println(resultsMap)
+		if i > 300 {
+			break
+		} else {
+			i++
 		}
 
 		ptr = ptr + int64(len(byt))
@@ -140,12 +158,16 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 func computeStatsReduce(resultsMaps []map[string]result) map[string]result {
 	for i := range len(resultsMaps) {
 		fmt.Printf("size of map %d: %d\n", i, len(resultsMaps[i]))
+		// fmt.Println(resultsMaps[i])
 	}
 
 	out := resultsMaps[0]
 	for i := 1; i < len(resultsMaps); i++ {
 		for k, v := range resultsMaps[i] {
+			// fmt.Println("k", k)
 			vout, ok := out[k]
+			// fmt.Println("vout", vout, "ok", ok)
+			// k = string(k)
 			if ok {
 				out[k] = result{
 					count: vout.count + v.count,
@@ -154,9 +176,11 @@ func computeStatsReduce(resultsMaps []map[string]result) map[string]result {
 					max:   max(vout.max, v.max),
 				}
 			} else {
-				out[k] = vout
+				out[k] = v
 			}
 		}
 	}
+	// fmt.Println(out)
+	// fmt.Println(resultsMaps[1])
 	return out
 }
