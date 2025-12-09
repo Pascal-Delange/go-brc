@@ -14,11 +14,17 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 	"unsafe"
 )
 
 func main() {
+	s := time.Now()
+	defer func() {
+		fmt.Printf("Finished after %s", time.Since(s))
+	}()
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
+	heapprofile := flag.String("heapprofile", "", "write heap profile to file")
 	fileName := flag.String("filename", "./data/measurements_1M.txt", "file to read")
 	routines := flag.Int("routines", runtime.NumCPU()+1, "nb of goroutines")
 	flag.Parse()
@@ -30,6 +36,13 @@ func main() {
 		}
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
+	}
+	if *heapprofile != "" {
+		f, err := os.Create(*heapprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.WriteHeapProfile(f)
 	}
 
 	fi, err := os.Stat(*fileName)
@@ -48,10 +61,10 @@ func main() {
 	separators = append(separators, -1)
 
 	var wg sync.WaitGroup
-	resultMaps := make([]map[string]result, chunks)
+	resultMaps := make([]map[uint64]result, chunks)
 	for i = range chunks {
 		idx := i
-		resultMaps[idx] = make(map[string]result, 10_000)
+		resultMaps[idx] = make(map[uint64]result, 10_000)
 		wg.Go(func() {
 			computeStatsMap(*fileName, int(idx), resultMaps[idx], separators[idx], separators[idx+1], idx == 0)
 		})
@@ -66,7 +79,7 @@ func main() {
 	fmt.Print("{")
 	ten := 10.
 	for _, k := range keys {
-		fmt.Printf("%s=%2.1f/%2.1f/%2.1f, ", k, float64(out[k].min)/ten, float64(out[k].sum)/float64(out[k].count)/ten, float64(out[k].max)/ten)
+		fmt.Printf("%d=%2.1f/%2.1f/%2.1f, ", k, float64(out[k].min)/ten, float64(out[k].sum)/float64(out[k].count)/ten, float64(out[k].max)/ten)
 	}
 	fmt.Print("}\n\n")
 }
@@ -75,8 +88,9 @@ func unsafeBytesToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
 
-func computeStatsMap(fileName string, idx int, resultsMap map[string]result, start, end int64, first bool) {
+func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, start, end int64, first bool) {
 	fmt.Printf("Chunk %d: Reading rows between bytes %d and %d\n", idx, start, end)
+	tStart := time.Now()
 	file, err := os.Open(fileName)
 	if err != nil {
 		log.Fatal(err)
@@ -97,7 +111,7 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 	var byt []byte
 	var val int64
 	var sepIdx int
-	i := 0
+	// i := 0
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			log.Fatalln(err)
@@ -107,33 +121,37 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 
 		sepIdx = bytes.IndexByte(byt, ';')
 
-		name := unsafeBytesToString(byt[:sepIdx])
+		// name := unsafeBytesToString(byt[:sepIdx])
+		nameAsInt := hashBytes(byt[:sepIdx])
 		pointSeptIdx := bytes.IndexByte(byt[sepIdx+1:], '.')
-		valStr := unsafeBytesToString(append(byt[sepIdx+1:sepIdx+1+pointSeptIdx], byt[sepIdx+1+pointSeptIdx+1:]...))
+
+		// valStr := unsafeBytesToString(append(byt[sepIdx+1:sepIdx+1+pointSeptIdx], byt[sepIdx+1+pointSeptIdx+1]))
+		valStr := unsafeBytesToString(byt[sepIdx+1 : sepIdx+1+pointSeptIdx])
 		// fmt.Println(valStr)
 
 		// valStr = strings.Replace(valStr, ".", "", 1)
 		val, _ = strconv.ParseInt(valStr, 0, 64)
+		val = val*10 + int64(byt[sepIdx+1+pointSeptIdx+1])
 		// fmt.Println("chunk: ", idx, name, val)
 
-		if _, ok := resultsMap[name]; ok {
+		if _, ok := resultsMap[nameAsInt]; ok {
 			// if textSl[0] == "Aachen" && valI > 990 {
 			// 	fmt.Println(text)
 			// }
 			// if os.Getenv("log_level") == "debug" {
 			// 	fmt.Printf("%s: \n - Before: %+v\n - received %v\n", textSl[0], resultsMap[textSl[0]], valI)
 			// }
-			resultsMap[name] = result{
-				count: resultsMap[name].count + 1,
-				sum:   resultsMap[name].sum + val,
-				min:   min(resultsMap[name].min, val),
-				max:   max(resultsMap[name].max, val),
+			resultsMap[nameAsInt] = result{
+				count: resultsMap[nameAsInt].count + 1,
+				sum:   resultsMap[nameAsInt].sum + val,
+				min:   min(resultsMap[nameAsInt].min, val),
+				max:   max(resultsMap[nameAsInt].max, val),
 			}
 			// if os.Getenv("log_level") == "debug" {
 			// 	fmt.Printf(" - new: %+v\n", resultsMap[textSl[0]])
 			// }
 		} else {
-			resultsMap[name] = result{
+			resultsMap[nameAsInt] = result{
 				count: 1,
 				sum:   val,
 				min:   val,
@@ -141,21 +159,21 @@ func computeStatsMap(fileName string, idx int, resultsMap map[string]result, sta
 			}
 		}
 		// fmt.Println(resultsMap)
-		if i > 300 {
-			break
-		} else {
-			i++
-		}
+		// if i > 300 {
+		// 	break
+		// } else {
+		// 	i++
+		// }
 
 		ptr = ptr + int64(len(byt))
 		if ptr > end && end > 0 {
-			fmt.Printf("%d: exit at ptr %d\n", idx, ptr)
+			fmt.Printf("%d: exit at ptr %d after %s\n", idx, ptr, time.Since(tStart))
 			return
 		}
 	}
 }
 
-func computeStatsReduce(resultsMaps []map[string]result) map[string]result {
+func computeStatsReduce(resultsMaps []map[uint64]result) map[uint64]result {
 	for i := range len(resultsMaps) {
 		fmt.Printf("size of map %d: %d\n", i, len(resultsMaps[i]))
 		// fmt.Println(resultsMaps[i])
@@ -182,5 +200,13 @@ func computeStatsReduce(resultsMaps []map[string]result) map[string]result {
 	}
 	// fmt.Println(out)
 	// fmt.Println(resultsMaps[1])
+	return out
+}
+
+func hashBytes(b []byte) uint64 {
+	var out uint64
+	for _, v := range b {
+		out += uint64(v)
+	}
 	return out
 }
