@@ -62,24 +62,31 @@ func main() {
 
 	var wg sync.WaitGroup
 	resultMaps := make([]map[uint64]result, chunks)
+	namesMaps := make([]map[uint64]string, chunks)
 	for i = range chunks {
 		idx := i
 		resultMaps[idx] = make(map[uint64]result, 10_000)
+		namesMaps[idx] = make(map[uint64]string, 10_000)
 		wg.Go(func() {
-			computeStatsMap(*fileName, int(idx), resultMaps[idx], separators[idx], separators[idx+1], idx == 0)
+			computeStatsMap(*fileName, int(idx), resultMaps[idx], namesMaps[idx], separators[idx], separators[idx+1], idx == 0)
 		})
 	}
 	wg.Wait()
 
-	out := computeStatsReduce(resultMaps)
+	out, names := computeStatsReduce(resultMaps, namesMaps)
 
 	keysIter := maps.Keys(out)
 	keys := slices.Sorted(keysIter)
 
 	fmt.Print("{")
 	ten := 10.
+	first := true
 	for _, k := range keys {
-		fmt.Printf("%d=%2.1f/%2.1f/%2.1f, ", k, float64(out[k].min)/ten, float64(out[k].sum)/float64(out[k].count)/ten, float64(out[k].max)/ten)
+		if !first {
+			fmt.Printf(", ")
+		}
+		first = false
+		fmt.Printf("%s=%2.1f/%2.1f/%2.1f", names[k], float64(out[k].min)/ten, float64(out[k].sum)/float64(out[k].count)/ten, float64(out[k].max)/ten)
 	}
 	fmt.Print("}\n\n")
 }
@@ -88,7 +95,7 @@ func unsafeBytesToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
 
-func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, start, end int64, first bool) {
+func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, namesMap map[uint64]string, start, end int64, first bool) {
 	fmt.Printf("Chunk %d: Reading rows between bytes %d and %d\n", idx, start, end)
 	tStart := time.Now()
 	file, err := os.Open(fileName)
@@ -111,7 +118,7 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, sta
 	var byt []byte
 	var val int64
 	var sepIdx int
-	// i := 0
+
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			log.Fatalln(err)
@@ -121,36 +128,23 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, sta
 
 		sepIdx = bytes.IndexByte(byt, ';')
 
-		// name := unsafeBytesToString(byt[:sepIdx])
 		nameAsInt := hashBytes(byt[:sepIdx])
 		pointSeptIdx := bytes.IndexByte(byt[sepIdx+1:], '.')
 
-		// valStr := unsafeBytesToString(append(byt[sepIdx+1:sepIdx+1+pointSeptIdx], byt[sepIdx+1+pointSeptIdx+1]))
 		valStr := unsafeBytesToString(byt[sepIdx+1 : sepIdx+1+pointSeptIdx])
-		// fmt.Println(valStr)
 
-		// valStr = strings.Replace(valStr, ".", "", 1)
 		val, _ = strconv.ParseInt(valStr, 0, 64)
 		val = val*10 + int64(byt[sepIdx+1+pointSeptIdx+1])
-		// fmt.Println("chunk: ", idx, name, val)
 
 		if _, ok := resultsMap[nameAsInt]; ok {
-			// if textSl[0] == "Aachen" && valI > 990 {
-			// 	fmt.Println(text)
-			// }
-			// if os.Getenv("log_level") == "debug" {
-			// 	fmt.Printf("%s: \n - Before: %+v\n - received %v\n", textSl[0], resultsMap[textSl[0]], valI)
-			// }
 			resultsMap[nameAsInt] = result{
 				count: resultsMap[nameAsInt].count + 1,
 				sum:   resultsMap[nameAsInt].sum + val,
 				min:   min(resultsMap[nameAsInt].min, val),
 				max:   max(resultsMap[nameAsInt].max, val),
 			}
-			// if os.Getenv("log_level") == "debug" {
-			// 	fmt.Printf(" - new: %+v\n", resultsMap[textSl[0]])
-			// }
 		} else {
+			namesMap[nameAsInt] = string(byt[:sepIdx])
 			resultsMap[nameAsInt] = result{
 				count: 1,
 				sum:   val,
@@ -158,12 +152,6 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, sta
 				max:   val,
 			}
 		}
-		// fmt.Println(resultsMap)
-		// if i > 300 {
-		// 	break
-		// } else {
-		// 	i++
-		// }
 
 		ptr = ptr + int64(len(byt))
 		if ptr > end && end > 0 {
@@ -173,19 +161,18 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, sta
 	}
 }
 
-func computeStatsReduce(resultsMaps []map[uint64]result) map[uint64]result {
+func computeStatsReduce(resultsMaps []map[uint64]result, namesMaps []map[uint64]string) (out map[uint64]result, names map[uint64]string) {
 	for i := range len(resultsMaps) {
 		fmt.Printf("size of map %d: %d\n", i, len(resultsMaps[i]))
 		// fmt.Println(resultsMaps[i])
 	}
 
-	out := resultsMaps[0]
+	out = resultsMaps[0]
+	names = namesMaps[0]
 	for i := 1; i < len(resultsMaps); i++ {
 		for k, v := range resultsMaps[i] {
-			// fmt.Println("k", k)
 			vout, ok := out[k]
-			// fmt.Println("vout", vout, "ok", ok)
-			// k = string(k)
+
 			if ok {
 				out[k] = result{
 					count: vout.count + v.count,
@@ -195,18 +182,18 @@ func computeStatsReduce(resultsMaps []map[uint64]result) map[uint64]result {
 				}
 			} else {
 				out[k] = v
+				names[k] = namesMaps[i][k]
 			}
 		}
 	}
-	// fmt.Println(out)
-	// fmt.Println(resultsMaps[1])
-	return out
+
+	return out, names
 }
 
 func hashBytes(b []byte) uint64 {
 	var out uint64
 	for _, v := range b {
-		out += uint64(v)
+		out = out*52 + uint64(v)
 	}
 	return out
 }
