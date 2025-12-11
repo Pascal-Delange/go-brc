@@ -143,21 +143,9 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, nam
 		val, _ = strconv.ParseInt(valStr, 0, 64)
 		val = val*10 + int64(byt[sepIdx+1+pointSeptIdx+1])
 
-		if _, ok := resultsMap[nameAsInt]; ok {
-			resultsMap[nameAsInt] = result{
-				count: resultsMap[nameAsInt].count + 1,
-				sum:   resultsMap[nameAsInt].sum + val,
-				min:   min(resultsMap[nameAsInt].min, val),
-				max:   max(resultsMap[nameAsInt].max, val),
-			}
-		} else {
+		resultsMap[nameAsInt] = newResult(resultsMap[nameAsInt], val)
+		if resultsMap[nameAsInt].count == 1 {
 			namesMap[nameAsInt] = string(byt[:sepIdx])
-			resultsMap[nameAsInt] = result{
-				count: 1,
-				sum:   val,
-				min:   val,
-				max:   val,
-			}
 		}
 
 		ptr = ptr + int64(len(byt))
@@ -165,6 +153,15 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, nam
 			fmt.Printf("%d: exit at ptr %d after %s\n", idx, ptr, time.Since(tStart))
 			return
 		}
+	}
+}
+
+func newResult(old result, val int64) result {
+	return result{
+		count: old.count + 1,
+		sum:   old.sum + val,
+		min:   min(old.min, val),
+		max:   max(old.max, val),
 	}
 }
 
