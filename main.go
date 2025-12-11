@@ -18,6 +18,8 @@ import (
 	"unsafe"
 )
 
+var bufSizeMb int
+
 func main() {
 	s := time.Now()
 	defer func() {
@@ -27,6 +29,7 @@ func main() {
 	heapprofile := flag.String("heapprofile", "", "write heap profile to file")
 	fileName := flag.String("filename", "./data/measurements_1M.txt", "file to read")
 	routines := flag.Int("routines", runtime.NumCPU()+1, "nb of goroutines")
+	bufsizeFlag := flag.Int("buffer", 5, "buffer size in Mb")
 	flag.Parse()
 	fmt.Println("reading file " + *fileName)
 	if *cpuprofile != "" {
@@ -44,6 +47,7 @@ func main() {
 		}
 		pprof.WriteHeapProfile(f)
 	}
+	bufSizeMb = *bufsizeFlag
 
 	fi, err := os.Stat(*fileName)
 	if err != nil {
@@ -104,10 +108,13 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, nam
 	}
 	defer file.Close()
 	file.Seek(start, io.SeekStart)
-	reader := bufio.NewReader(file)
+	// reader := bufio.NewReader(file)
 	ptr := start
 
-	scanner := bufio.NewScanner(reader)
+	scanner := bufio.NewScanner(file)
+	bufSize := bufSizeMb * 1024 * 1024
+	buf := make([]byte, bufSize)
+	scanner.Buffer(buf, bufSize)
 	if !first {
 		more := scanner.Scan()
 		if !more {
