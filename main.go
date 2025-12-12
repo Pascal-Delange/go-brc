@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -12,10 +11,8 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
-	"unsafe"
 )
 
 var bufSizeMb int
@@ -95,12 +92,7 @@ func main() {
 	fmt.Print("}\n\n")
 }
 
-func unsafeBytesToString(b []byte) string {
-	return *(*string)(unsafe.Pointer(&b))
-}
-
 func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, namesMap map[uint64]string, start, end int64, first bool) {
-	fmt.Printf("Chunk %d: Reading rows between bytes %d and %d\n", idx, start, end)
 	tStart := time.Now()
 	file, err := os.Open(fileName)
 	if err != nil {
@@ -108,7 +100,6 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, nam
 	}
 	defer file.Close()
 	file.Seek(start, io.SeekStart)
-	// reader := bufio.NewReader(file)
 	ptr := start
 
 	scanner := bufio.NewScanner(file)
@@ -125,6 +116,8 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, nam
 	var byt []byte
 	var val int64
 	var sepIdx int
+	var nameAsInt uint64
+	var mult int64
 
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
@@ -132,16 +125,28 @@ func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, nam
 		}
 
 		byt = scanner.Bytes()
+		val = 0
+		mult = 1
 
-		sepIdx = bytes.IndexByte(byt, ';')
+		for i, r := range byt {
+			if r == ';' {
+				nameAsInt = hashBytes(byt[:i])
+				sepIdx = i
+				break
+			}
+		}
 
-		nameAsInt := hashBytes(byt[:sepIdx])
-		pointSeptIdx := bytes.IndexByte(byt[sepIdx+1:], '.')
-
-		valStr := unsafeBytesToString(byt[sepIdx+1 : sepIdx+1+pointSeptIdx])
-
-		val, _ = strconv.ParseInt(valStr, 0, 64)
-		val = val*10 + int64(byt[sepIdx+1+pointSeptIdx+1])
+		if byt[sepIdx+1] == '-' {
+			mult = -1
+			sepIdx++
+		}
+		val = int64(byt[sepIdx+1])
+		if byt[sepIdx+2] != '.' {
+			val = 100*val + 10*int64(byt[sepIdx+2]) + int64(byt[sepIdx+4])
+		} else {
+			val = 10*val + int64(byt[sepIdx+3])
+		}
+		val = val * mult
 
 		resultsMap[nameAsInt] = newResult(resultsMap[nameAsInt], val)
 		if resultsMap[nameAsInt].count == 1 {
@@ -166,11 +171,6 @@ func newResult(old result, val int64) result {
 }
 
 func computeStatsReduce(resultsMaps []map[uint64]result, namesMaps []map[uint64]string) (out map[uint64]result, names map[uint64]string) {
-	for i := range len(resultsMaps) {
-		fmt.Printf("size of map %d: %d\n", i, len(resultsMaps[i]))
-		// fmt.Println(resultsMaps[i])
-	}
-
 	out = resultsMaps[0]
 	names = namesMaps[0]
 	for i := 1; i < len(resultsMaps); i++ {
