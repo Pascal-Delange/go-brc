@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"io"
@@ -50,16 +49,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	length := fi.Size()
-	chunks := int64(*routines)
+	length := int(fi.Size())
+	chunks := *routines
 	fmt.Printf("Running with %d goroutines (and as many chunks)\n", chunks)
 	chunksize := length / chunks
-	separators := []int64{}
-	var i int64
+	separators := []int{}
+	var i int
 	for i = 0; i < chunks; i++ {
 		separators = append(separators, i*chunksize)
 	}
-	separators = append(separators, -1)
+	separators = append(separators, length)
 
 	var wg sync.WaitGroup
 	resultMaps := make([]map[uint64]result, chunks)
@@ -92,71 +91,158 @@ func main() {
 	fmt.Print("}\n\n")
 }
 
-func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, namesMap map[uint64]string, start, end int64, first bool) {
+type bufferedReader struct {
+	reader     io.Reader
+	buf        []byte
+	pos        int
+	size       int
+	endReached bool
+	counter    int
+	maxBytes   int
+	start      time.Time
+}
+
+var x io.Reader
+
+func NewBufferedReader(r io.Reader, size int, maxBytes int) bufferedReader {
+	return bufferedReader{
+		reader:   r,
+		buf:      make([]byte, size),
+		size:     size,
+		maxBytes: maxBytes,
+		start:    time.Now(),
+	}
+}
+func (b *bufferedReader) ReadAByte() (p byte, done bool) {
+	for {
+
+		if b.pos < len(b.buf) {
+			b.pos++
+			return b.buf[b.pos-1], b.pos == len(b.buf) && b.endReached
+		}
+
+		b.pos = 0
+		n, err := b.reader.Read(b.buf)
+		cutPos := min(n, b.maxBytes-b.counter)
+
+		// if time.Now().After(b.start.Add(time.Second * 20)) {
+		// 	fmt.Println("cutpos", cutPos)
+		// 	fmt.Println("n,err", n, err)
+		// }
+		b.counter += cutPos
+		// if err == io.EOF || cutPos < len(b.buf) {
+		if err == io.EOF || b.counter == b.maxBytes {
+			b.endReached = true
+		}
+		b.buf = b.buf[:cutPos]
+		if len(b.buf) == 0 {
+			panic("endless loop")
+		}
+	}
+}
+
+func readUpToFirstSemColon(r bufferedReader) {
+	for {
+		p, _ := r.ReadAByte()
+		if p == '\n' {
+			return
+		}
+	}
+}
+
+func computeStatsMap(fileName string, idx int, resultsMap map[uint64]result, namesMap map[uint64]string, start, end int, first bool) {
 	tStart := time.Now()
 	file, err := os.Open(fileName)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer file.Close()
-	file.Seek(start, io.SeekStart)
-	ptr := start
+	file.Seek(int64(start), io.SeekStart)
 
-	scanner := bufio.NewScanner(file)
-	bufSize := bufSizeMb * 1024 * 1024
-	buf := make([]byte, bufSize)
-	scanner.Buffer(buf, bufSize)
+	scanner := NewBufferedReader(file, bufSizeMb*1024*1024, end-start)
+
 	if !first {
-		more := scanner.Scan()
-		if !more {
-			return
-		}
+		readUpToFirstSemColon(scanner)
 	}
 
-	var byt []byte
 	var val int64
 	var sepIdx int
 	var nameAsInt uint64
 	var mult int64
+	nameMode := true
+	byt := make([]byte, 0, 100)
 
-	for scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			log.Fatalln(err)
-		}
-
-		byt = scanner.Bytes()
-		val = 0
-		mult = 1
-
-		for i, r := range byt {
-			if r == ';' {
-				nameAsInt = hashBytes(byt[:i])
-				sepIdx = i
-				break
-			}
-		}
-
-		if byt[sepIdx+1] == '-' {
-			mult = -1
-			sepIdx++
-		}
-		val = int64(byt[sepIdx+1])
-		if byt[sepIdx+2] != '.' {
-			val = 100*val + 10*int64(byt[sepIdx+2]) + int64(byt[sepIdx+4])
-		} else {
-			val = 10*val + int64(byt[sepIdx+3])
-		}
-		val = val * mult
-
-		resultsMap[nameAsInt] = newResult(resultsMap[nameAsInt], val)
-		if resultsMap[nameAsInt].count == 1 {
-			namesMap[nameAsInt] = string(byt[:sepIdx])
-		}
-
-		ptr = ptr + int64(len(byt))
-		if ptr > end && end > 0 {
-			fmt.Printf("%d: exit at ptr %d after %s\n", idx, ptr, time.Since(tStart))
+	cont := true
+	for cont {
+		b, done := scanner.ReadAByte()
+		if done {
+			fmt.Printf("%d: exit at after %s\n", idx, time.Since(tStart))
+			cont = false
 			return
+		}
+
+		switch b {
+		case ';':
+			nameAsInt = hashBytes(byt)
+			nameMode = false
+			val = 0
+			mult = 1
+			continue
+		case '\n':
+			resultsMap[nameAsInt] = newResult(resultsMap[nameAsInt], val)
+			if resultsMap[nameAsInt].count == 1 {
+				namesMap[nameAsInt] = string(byt[:sepIdx])
+			}
+
+			nameMode = true
+			byt = byt[:0]
+			continue
+		}
+
+		switch nameMode {
+		case true:
+			byt = append(byt, b)
+			continue
+		case false:
+			if b == '-' {
+				mult = -1
+				b, done = scanner.ReadAByte()
+				if done {
+					cont = false
+					return
+				}
+			}
+			val = int64(b)
+			b, done = scanner.ReadAByte()
+			if done {
+				cont = false
+				return
+			}
+			if b != '.' {
+				// not a point so it's a XX.X number
+				val = 100*val + 10*int64(b)
+				_, done = scanner.ReadAByte()
+				if done {
+					cont = false
+					return
+				}
+				b, done = scanner.ReadAByte()
+				if done {
+					cont = false
+					return
+				}
+				val += int64(b)
+			} else {
+				// we got a point, so it's X.X number
+				b, done = scanner.ReadAByte()
+				if done {
+					cont = false
+					return
+				}
+				val = 10*val + int64(b)
+			}
+			val = val * mult
+			continue
 		}
 	}
 }
